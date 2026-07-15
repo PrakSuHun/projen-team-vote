@@ -1,36 +1,89 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 프로젠 팀 투표 · 집계 프로그램
 
-## Getting Started
+11개 팀 대상 **참가자 투표 + 심사위원 투표**(각 팀 100점 만점)를 스마트폰으로 받아 객관적으로 점수화하고,
+현장에서 **5위 → 1위** 를 경연쇼처럼 하나씩(긴장감 브금 + 팡파레 + 축포) 발표하는 웹앱입니다.
 
-First, run the development server:
+## 화면(라우트)
+| 경로 | 용도 | 누가 |
+|---|---|---|
+| `/` | 참가자 투표(이름 인증 → 본인 팀 제외 → 좋았던 3팀 선택) | 참가자(스마트폰) |
+| `/judge?code=<코드>` | 심사위원 순위 매기기(1등~11등, 드래그/버튼으로 조정) | 심사위원(비공개 링크) |
+| `/admin` | 투표 개폐·현황·QR·**발표 진행 컨트롤** | 운영자(노트북) |
+| `/reveal` | 빔프로젝터 발표 화면 | 무대/TV |
 
+## 빠르게 로컬에서 실행 (리허설용)
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
+npm test           # 집계/발표 로직 단위 테스트
 ```
+- DB 환경변수를 설정하지 않으면 **로컬 파일 저장소**(`.data/store.json`)로 자동 동작합니다.
+  혼자 리허설/개발할 때 편합니다. (여러 기기·실제 행사에는 아래 배포(Upstash/Supabase) 필요)
+- 기본 관리자 비밀번호: `projen-admin` · 기본 심사위원 코드: `judge-alpha`, `judge-bravo`
+  → `.env.local`에서 `ADMIN_PASSWORD`, `JUDGE_CODES`로 변경하세요(`.env.example` 참고).
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 점수 계산 방식
+각 팀은 **100점 만점**으로 채점됩니다 (참가자 50 + 심사 50).
+- **참가자 파트(20~50점)**: 각자 좋았던 **3팀 선택**(순위 없음, 동일 배점) → `20점 + 득표율 × 30점`.
+  - 득표율의 모수는 **전체 명단 기준**(기권해도 33명이 투표한 것으로 나눔).
+  - 본인 팀원은 모수에서 제외(본인 팀에 투표 불가하므로) → 팀 인원수 차이가 공정하게 보정.
+  - 한 표도 못 받아도 기본 20점.
+- **심사위원 파트(35~50점)**: 각 심사위원이 1등~11등 순위 부여 → 1등 50점 ~ 꼴등 35점(등수당 1.5점)으로 환산해 **심사위원 평균**.
+- **총점 = 참가자 점수 + 심사 점수** (55~100점). 이 값 내림차순이 최종 순위.
+  예: 참가자 31.8 + 심사 46.2 = 총점 78.0 — 화면에 보이는 두 점수의 합이 그대로 총점.
+- 가중치·배점은 `lib/config.ts` 기본값이며, DB `settings.config`로 조정 가능.
+- 명단·팀은 `lib/roster.ts`에서 수정합니다.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 실제 행사 배포 (온라인, 어디서든 접속)
+여러 스마트폰이 동시에 접속하려면 공용 DB가 필요합니다. 저장소는 환경변수로 자동 선택됩니다:
+**Upstash(Redis) → Supabase → (둘 다 없으면) 로컬 파일** 순.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 방법 A — Vercel + Upstash Redis ⭐ 추천 (SQL 없음, 클릭 몇 번)
+1. **Vercel에 이 폴더 배포** (GitHub 연결 또는 `vercel` CLI).
+2. Vercel 프로젝트 → **Storage** 탭 → **Upstash (Redis)** 추가/연결.
+   → `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` (또는 `KV_REST_API_URL/TOKEN`)이 **자동 등록**됩니다. 테이블·SQL 설정 불필요.
+3. 환경변수에 추가 등록:
+   - `ADMIN_PASSWORD` = 원하는 관리자 비밀번호
+   - `JUDGE_CODES` = 심사위원 코드들(쉼표 구분), 예: `sim-2xk9,sim-7mp3` (추측 어렵게)
+4. 재배포 후 배포 URL로 접속. 심사위원에겐 `https://<도메인>/judge?code=<코드>` 링크만 개별 전달.
+   > 중복 투표 방지는 Redis의 원자적 연산(HSETNX)으로 처리되어 동시 제출도 안전합니다.
 
-## Learn More
+### 방법 B — Vercel + Supabase (SQL 한 번 실행)
+1. **Supabase 프로젝트 생성** → SQL Editor에 `supabase/schema.sql` 붙여넣고 실행.
+2. Project Settings → API 에서 `Project URL`과 `service_role` 키 복사.
+3. Vercel 환경변수: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`(⚠️ 서버 전용), `ADMIN_PASSWORD`, `JUDGE_CODES`.
+4. 배포 URL로 접속.
 
-To learn more about Next.js, take a look at the following resources:
+## 행사 당일 진행 순서
+1. `/admin` 접속(비밀번호) → **참가자/심사 투표 열기** ON.
+2. 무대에 **참가자 투표 QR**(admin의 QR) 띄우기 → 참가자들 투표.
+3. 심사위원에게 개별 **심사 링크** 전달 → 심사.
+4. 투표 마감: admin에서 **투표 닫기** OFF.
+5. 발표: `/reveal`을 빔에 띄우고 **"발표 시작"** 클릭(오디오·풀스크린 활성화).
+6. admin의 **"다음 ▶"** 버튼으로 사회자 멘트에 맞춰 한 단계씩 진행:
+   `5위! 두구두구 → 참가자 점수 → 심사위원 점수 → 총점 → 팀 공개` … 1위까지 → 전체 순위표.
+   (실수 시 **◀ 이전**, 처음부터는 **처음으로(대기)**)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+> 발표 화면은 미공개 순위/점수를 서버에서 숨겨 보내므로, 개발자도구로도 미리 스포일러가 노출되지 않습니다.
+> 사운드는 기본적으로 코드로 합성된 시네마틱 브금이 나오고, `public/audio/`에 음원을 넣으면 그 파일이 우선 재생됩니다(아래 참고).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 구조
+- `lib/` — 도메인 로직(순수·테스트됨): `roster.ts`(명단), `scoring.ts`(집계), `reveal.ts`(발표 상태머신),
+  `store*.ts`(저장소: 파일/Supabase), `config.ts`, `auth.ts`, `types.ts`
+- `app/api/` — 참가자/심사/관리자/공개 API 라우트
+- `app/page.tsx` · `app/judge/` · `app/admin/` · `app/reveal/` — 화면
+- `app/reveal` + `lib/audio.ts` — 시네마틱 합성 사운드 + `public/audio/` 음원 파일 우선 재생(2계층)
 
-## Deploy on Vercel
+## 발표 효과음/브금 교체
+발표 화면의 사운드는 2계층입니다. `public/audio/` 에 아래 이름으로 음원 파일을 넣으면
+그 파일을 우선 재생하고, **파일이 없으면 코드로 만든 합성음이 자동 대체**하므로 전부 선택 사항입니다.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| 파일 | 용도 |
+| --- | --- |
+| `public/audio/tension.mp3` | 순위 발표~점수 공개 동안 깔리는 긴장감 브금(**루프 재생되므로 이어지는 곡 권장**) |
+| `public/audio/reveal.mp3` | 점수 한 줄이 공개될 때의 짧은 히트음 |
+| `public/audio/fanfare.mp3` | 팀 이름 공개 팡파레 |
+| `public/audio/winner.mp3` | 1위 공개·최종 순위표용 대형 버전(없으면 `fanfare.mp3` 로 대체) |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- 음원은 유튜브 오디오 라이브러리 등에서 **무료(로열티 프리) 음원**을 받아 쓰는 것을 권장합니다.
+- 파일을 넣거나 바꾼 뒤에는 발표 화면(`/reveal`)을 새로고침하고 다시 "발표 시작"을 누르면 적용됩니다.
